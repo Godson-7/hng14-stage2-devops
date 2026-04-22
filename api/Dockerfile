@@ -1,9 +1,3 @@
-FROM python:3.11-slim AS builder
-
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir --user -r requirements.txt
-
 FROM python:3.11-slim
 
 RUN addgroup --system appgroup && \
@@ -11,10 +5,10 @@ RUN addgroup --system appgroup && \
 
 WORKDIR /app
 
-COPY --from=builder /root/.local /home/appuser/.local
-COPY . .
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-ENV PATH=/home/appuser/.local/bin:$PATH
+COPY . .
 
 HEALTHCHECK --interval=10s --timeout=5s --retries=3 \
   CMD curl -f http://localhost:8000/health || exit 1
