@@ -9,12 +9,7 @@ app = FastAPI()
 REDIS_HOST = os.getenv("REDIS_HOST", "redis")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 
-try:
-    r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT)
-    r.ping()
-except redis.ConnectionError as e:
-    print(f"Redis connection failed: {e}")
-    raise
+r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT)
 
 @app.get("/health")
 def health():
