@@ -1,14 +1,19 @@
-FROM python:3.11-slim
+FROM python:3.11-alpine AS builder
 
-RUN addgroup --system appgroup && \
-    adduser --system --ingroup appgroup appuser
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir --user -r requirements.txt
+
+FROM python:3.11-alpine
+
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
+COPY --from=builder /root/.local /home/appuser/.local
 COPY . .
+
+ENV PATH=/home/appuser/.local/bin:$PATH
 
 USER appuser
 
