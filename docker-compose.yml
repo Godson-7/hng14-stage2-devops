@@ -9,6 +9,7 @@ services:
     image: redis:7-alpine
     networks:
       - internal
+    restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -24,6 +25,7 @@ services:
     build: ./api
     networks:
       - internal
+    restart: unless-stopped
     ports:
       - "8000:8000"
     environment:
@@ -42,6 +44,7 @@ services:
     build: ./worker
     networks:
       - internal
+    restart: unless-stopped
     environment:
       REDIS_HOST: redis
       REDIS_PORT: "6379"
@@ -58,6 +61,7 @@ services:
     build: ./frontend
     networks:
       - internal
+    restart: unless-stopped
     ports:
       - "${FRONTEND_PORT:-3000}:3000"
     environment:

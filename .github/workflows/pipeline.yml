@@ -7,20 +7,9 @@ on:
     branches: [main]
 
 jobs:
-  build-and-test:
+  lint:
+    name: Lint Code
     runs-on: ubuntu-latest
-
-    services:
-      redis:
-        image: redis:7-alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 3
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -30,68 +19,126 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install API dependencies
+      - name: Install flake8
+        run: pip install flake8
+
+      - name: Run flake8
+        run: flake8 api/ worker/ --max-line-length=100 --exclude=api/tests
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+
+      - name: Install frontend dependencies
+        run: cd frontend && npm install
+
+      - name: Run eslint
+        run: |
+          cd frontend
+          npx eslint app.js --env node --env es2021 \
+            --rule '{"no-unused-vars": "warn"}' || true
+
+      - name: Run hadolint on Dockerfiles
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: api/Dockerfile
+
+      - name: Run hadolint on worker Dockerfile
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: worker/Dockerfile
+
+      - name: Run hadolint on frontend Dockerfile
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: frontend/Dockerfile
+
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
         run: |
           cd api
           pip install -r requirements.txt
-          pip install pytest pytest-cov
 
-      - name: Run API tests
-        env:
-          REDIS_HOST: localhost
-          REDIS_PORT: 6379
+      - name: Run pytest with coverage
         run: |
           cd api
-          pytest tests/ -v || true
+          pytest tests/ -v --cov=. --cov-report=xml --cov-report=term
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: api/coverage.xml
+
+  build:
+    name: Build and Push Images
+    runs-on: ubuntu-latest
+    needs: test
+    services:
+      registry:
+        image: registry:2
+        ports:
+          - 5000:5000
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: network=host
 
-      - name: Build all images
-        run: |
-          docker build -t api:latest ./api
-          docker build -t worker:latest ./worker
-          docker build -t frontend:latest ./frontend
+      - name: Build and push API image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./api
+          push: true
+          tags: |
+            localhost:5000/api:latest
+            localhost:5000/api:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
-      - name: Start full stack
-        run: |
-          docker compose up -d
-          sleep 30
+      - name: Build and push worker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./worker
+          push: true
+          tags: |
+            localhost:5000/worker:latest
+            localhost:5000/worker:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
-      - name: Check all containers are running
-        run: docker compose ps
-
-      - name: Test frontend health
-        run: curl -f http://localhost:3000/health || exit 1
-
-      - name: Test API health
-        run: curl -f http://localhost:8000/health || exit 1
-
-      - name: Submit a job and check status
-        run: |
-          JOB_ID=$(curl -sf -X POST http://localhost:3000/submit \
-            -H "Content-Type: application/json" | jq -r '.job_id')
-          echo "Job ID: $JOB_ID"
-          sleep 5
-          STATUS=$(curl -sf http://localhost:3000/status/$JOB_ID | jq -r '.status')
-          echo "Status: $STATUS"
-          if [ "$STATUS" = "completed" ]; then
-            echo "Job completed successfully"
-          else
-            echo "Job status: $STATUS - acceptable"
-          fi
-
-      - name: Show logs if anything failed
-        if: failure()
-        run: docker compose logs
-
-      - name: Tear down
-        if: always()
-        run: docker compose down -v
+      - name: Build and push frontend image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          push: true
+          tags: |
+            localhost:5000/frontend:latest
+            localhost:5000/frontend:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
   security-scan:
+    name: Security Scan
     runs-on: ubuntu-latest
-    needs: build-and-test
+    needs: build
 
     steps:
       - name: Checkout code
@@ -107,22 +154,97 @@ jobs:
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: api:latest
-          format: table
-          exit-code: 0
-          severity: CRITICAL,HIGH
+          format: sarif
+          output: trivy-api.sarif
+          exit-code: 1
+          severity: CRITICAL
 
-      - name: Run Trivy on Worker image
+      - name: Run Trivy on worker image
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: worker:latest
-          format: table
-          exit-code: 0
-          severity: CRITICAL,HIGH
+          format: sarif
+          output: trivy-worker.sarif
+          exit-code: 1
+          severity: CRITICAL
 
-      - name: Run Trivy on Frontend image
+      - name: Run Trivy on frontend image
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: frontend:latest
-          format: table
-          exit-code: 0
-          severity: CRITICAL,HIGH
+          format: sarif
+          output: trivy-frontend.sarif
+          exit-code: 1
+          severity: CRITICAL
+
+      - name: Upload Trivy SARIF results
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-sarif-results
+          path: "*.sarif"
+
+  integration-test:
+    name: Integration Test
+    runs-on: ubuntu-latest
+    needs: security-scan
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Start full stack
+        run: docker compose up -d --build
+
+      - name: Wait for services
+        run: sleep 30
+
+      - name: Check all containers are running
+        run: docker compose ps
+
+      - name: Run integration tests
+        run: |
+          chmod +x tests/integration.sh
+          bash tests/integration.sh
+
+      - name: Show logs if anything failed
+        if: failure()
+        run: docker compose logs
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v
+
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    needs: integration-test
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Rolling update
+        run: |
+          docker build -t api:new ./api
+
+          docker run -d --name api_new \
+            -e REDIS_HOST=redis \
+            -e REDIS_PORT=6379 \
+            api:new || true
+
+          for i in $(seq 1 12); do
+            STATUS=$(docker inspect --format='{{.State.Health.Status}}' api_new 2>/dev/null || echo "none")
+            echo "Health: $STATUS"
+            if [ "$STATUS" = "healthy" ]; then
+              echo "New container healthy"
+              docker stop api_old 2>/dev/null || true
+              docker rm api_old 2>/dev/null || true
+              docker rename api_new api || true
+              exit 0
+            fi
+            sleep 5
+          done
+
+          echo "Health check failed, rolling back"
+          docker stop api_new 2>/dev/null || true
+          docker rm api_new 2>/dev/null || true
+          exit 1

@@ -1,3 +1,9 @@
+FROM python:3.11-slim AS builder
+
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir --user -r requirements.txt
+
 FROM python:3.11-slim
 
 RUN addgroup --system appgroup && \
@@ -5,10 +11,10 @@ RUN addgroup --system appgroup && \
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
+COPY --from=builder /root/.local /home/appuser/.local
 COPY . .
+
+ENV PATH=/home/appuser/.local/bin:$PATH
 
 HEALTHCHECK --interval=10s --timeout=5s --retries=3 \
   CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
